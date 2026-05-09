@@ -557,6 +557,73 @@ void editorSelectSyntaxHighlight(char *filename) {
     }
 }
 
+/* ======================= UTF-8 Support ======================= */
+
+/* Get the screen width of a UTF-8 character starting at the given byte.
+ * Returns 1 for ASCII, 2 for most CJK characters, etc. */
+static int utf8CharWidth(const unsigned char *s, int len) {
+    if (len == 0) return 0;
+    unsigned char c = s[0];
+
+    /* ASCII */
+    if (c < 0x80) return 1;
+
+    /* Determine number of bytes in the character */
+    int bytes = 1;
+    if ((c & 0xE0) == 0xC0) {
+        bytes = 2;
+    } else if ((c & 0xF0) == 0xE0) {
+        bytes = 3;
+    } else if ((c & 0xF8) == 0xF0) {
+        bytes = 4;
+    }
+
+    /* Ensure we have enough bytes */
+    if (len < bytes) return 1;
+
+    /* Check for valid UTF-8 continuation bytes */
+    for (int i = 1; i < bytes; i++) {
+        if ((s[i] & 0xC0) != 0x80) return 1;
+    }
+
+    /* CJK characters (0x4E00-0x9FFF, 0x3000-0x303F, etc.) take 2 columns */
+    if (bytes >= 3) {
+        /* Check if it's a CJK character */
+        unsigned int codepoint = ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+        /* CJK Unified Ideographs and common CJK ranges */
+        if ((codepoint >= 0x4E00 && codepoint <= 0x9FFF) ||   /* CJK Unified Ideographs */
+            (codepoint >= 0x3000 && codepoint <= 0x303F) ||   /* CJK Symbols */
+            (codepoint >= 0xFF00 && codepoint <= 0xFFEF) ||    /* Fullwidth forms */
+            (codepoint >= 0x2E80 && codepoint <= 0x2EFF))     /* CJK Radicals Supplement */
+            return 2;
+    }
+
+    return 1;
+}
+
+/* Get the total screen width of a UTF-8 string (render string) */
+static int utf8Width(const char *s, int len) {
+    int width = 0;
+    int i = 0;
+    while (i < len) {
+        int w = utf8CharWidth((const unsigned char *)s + i, len - i);
+        width += w;
+        /* Advance to next character */
+        if ((s[i] & 0x80) == 0) {
+            i++;
+        } else if ((s[i] & 0xE0) == 0xC0) {
+            i += 2;
+        } else if ((s[i] & 0xF0) == 0xE0) {
+            i += 3;
+        } else if ((s[i] & 0xF8) == 0xF0) {
+            i += 4;
+        } else {
+            i++;
+        }
+    }
+    return width;
+}
+
 /* ======================= Editor rows implementation ======================= */
 
 /* Update the rendered version and the syntax highlight of a row. */
@@ -901,7 +968,9 @@ void editorRefreshScreen(void) {
 
         /* Find the file row and column offset for this visual row (soft wrap) */
         while (filerow < E.numrows) {
-            int row_height = (E.row[filerow].rsize + E.screencols - 1) / E.screencols;
+            int row_width = utf8Width(E.row[filerow].render, E.row[filerow].rsize);
+            int row_height = (row_width + E.screencols - 1) / E.screencols;
+            if (row_height == 0) row_height = 1;
             if (visual_row < row_offset + row_height) break;
             row_offset += row_height;
             filerow++;
@@ -926,18 +995,46 @@ void editorRefreshScreen(void) {
         }
 
         int subrow = visual_row - row_offset; /* Which sub-row of the line */
-        int coloff = subrow * E.screencols;
+        int screen_width = 0;
+        int coloff = 0;
+
+        /* Find the byte offset where this sub-row starts */
+        while (coloff < E.row[filerow].rsize && subrow > 0) {
+            int char_w = utf8CharWidth((const unsigned char *)E.row[filerow].render + coloff,
+                                       E.row[filerow].rsize - coloff);
+            screen_width += char_w;
+            if (screen_width >= E.screencols) {
+                subrow--;
+                if (subrow > 0) {
+                    screen_width = 0;
+                }
+            }
+            /* Advance to next UTF-8 character */
+            if ((E.row[filerow].render[coloff] & 0x80) == 0) {
+                coloff++;
+            } else if ((E.row[filerow].render[coloff] & 0xE0) == 0xC0) {
+                coloff += 2;
+            } else if ((E.row[filerow].render[coloff] & 0xF0) == 0xE0) {
+                coloff += 3;
+            } else if ((E.row[filerow].render[coloff] & 0xF8) == 0xF0) {
+                coloff += 4;
+            } else {
+                coloff++;
+            }
+        }
 
         r = &E.row[filerow];
 
         int len = r->rsize - coloff;
-        if (len > E.screencols) len = E.screencols;
         int current_color = -1;
+        screen_width = 0;
         if (len > 0) {
             char *c = r->render + coloff;
             unsigned char *hl = r->hl + coloff;
-            int j;
-            for (j = 0; j < len; j++) {
+            int j = 0;
+            while (j < len && screen_width < E.screencols) {
+                int char_w = utf8CharWidth((const unsigned char *)c + j, len - j);
+                if (screen_width + char_w > E.screencols) break;
                 if (hl[j] == HL_NONPRINT) {
                     char sym;
                     abAppend(&ab,"\x1b[7m",4);
@@ -952,7 +1049,7 @@ void editorRefreshScreen(void) {
                         abAppend(&ab,"\x1b[39m",5);
                         current_color = -1;
                     }
-                    abAppend(&ab,c+j,1);
+                    abAppend(&ab,c+j,char_w);
                 } else {
                     int color = editorSyntaxToColor(hl[j]);
                     if (color != current_color) {
@@ -961,9 +1058,23 @@ void editorRefreshScreen(void) {
                         current_color = color;
                         abAppend(&ab,buf,clen);
                     }
-                    abAppend(&ab,c+j,1);
+                    abAppend(&ab,c+j,char_w);
+                }
+                screen_width += char_w;
+                /* Advance to next UTF-8 character */
+                if ((c[j] & 0x80) == 0) {
+                    j++;
+                } else if ((c[j] & 0xE0) == 0xC0) {
+                    j += 2;
+                } else if ((c[j] & 0xF0) == 0xE0) {
+                    j += 3;
+                } else if ((c[j] & 0xF8) == 0xF0) {
+                    j += 4;
+                } else {
+                    j++;
                 }
             }
+            len = j;
         }
         abAppend(&ab,"\x1b[39m",5);
         abAppend(&ab,"\x1b[0K",4);
@@ -999,7 +1110,7 @@ void editorRefreshScreen(void) {
 
     /* Put cursor at its current position. Note that the horizontal position
      * at which the cursor is displayed may be different compared to 'E.cx'
-     * because of TABs. */
+     * because of TABs and UTF-8 characters. */
     int j;
     int cx = 1;
     int visual_row = E.rowoff + E.cy;
@@ -1008,14 +1119,44 @@ void editorRefreshScreen(void) {
 
     /* Find the file row and column offset for this visual row (soft wrap) */
     while (filerow < E.numrows) {
-        int row_height = (E.row[filerow].rsize + E.screencols - 1) / E.screencols;
+        int row_width = utf8Width(E.row[filerow].render, E.row[filerow].rsize);
+        int row_height = (row_width + E.screencols - 1) / E.screencols;
+        if (row_height == 0) row_height = 1;
         if (visual_row < row_offset + row_height) break;
         row_offset += row_height;
         filerow++;
     }
 
     erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
-    int coloff = (visual_row - row_offset) * E.screencols;
+    int coloff = 0;
+
+    /* Find byte offset for this sub-row (same logic as drawing) */
+    int subrow = visual_row - row_offset;
+    while (row && coloff < row->rsize && subrow > 0) {
+        int screen_width = 0;
+        int temp_coloff = coloff;
+        while (temp_coloff < row->rsize && screen_width < E.screencols) {
+            int char_w = utf8CharWidth((const unsigned char *)row->render + temp_coloff,
+                                       row->rsize - temp_coloff);
+            screen_width += char_w;
+            if (screen_width >= E.screencols) break;
+            /* Advance to next UTF-8 character */
+            if ((row->render[temp_coloff] & 0x80) == 0) {
+                temp_coloff++;
+            } else if ((row->render[temp_coloff] & 0xE0) == 0xC0) {
+                temp_coloff += 2;
+            } else if ((row->render[temp_coloff] & 0xF0) == 0xE0) {
+                temp_coloff += 3;
+            } else if ((row->render[temp_coloff] & 0xF8) == 0xF0) {
+                temp_coloff += 4;
+            } else {
+                temp_coloff++;
+            }
+        }
+        subrow--;
+        coloff = temp_coloff;
+    }
+
     if (row) {
         for (j = coloff; j < E.cx + coloff; j++) {
             if (j < row->size && row->chars[j] == TAB) cx += 7-((cx)%8);
