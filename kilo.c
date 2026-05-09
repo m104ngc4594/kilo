@@ -211,6 +211,13 @@ void disableRawMode(int fd) {
 
 /* Called at exit to avoid remaining in raw mode. */
 void editorAtExit(void) {
+    /* Move cursor to status bar row and clear from there to end of screen */
+    char seq[32];
+    snprintf(seq, sizeof(seq), "\x1b[%d;1H", E.screenrows);
+    write(STDOUT_FILENO, seq, strlen(seq));      /* Move to status bar row */
+    write(STDOUT_FILENO, "\x1b[0J", 4);          /* Clear from cursor to end of screen */
+    write(STDOUT_FILENO, "\x1b[0m", 4);          /* Reset attributes */
+    write(STDOUT_FILENO, "\r\n", 2);             /* Move to new line */
     disableRawMode(STDIN_FILENO);
 }
 
