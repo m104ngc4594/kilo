@@ -895,7 +895,17 @@ void editorRefreshScreen(void) {
     abAppend(&ab,"\x1b[?25l",6); /* Hide cursor. */
     abAppend(&ab,"\x1b[H",3); /* Go home. */
     for (y = 0; y < E.screenrows; y++) {
-        int filerow = E.rowoff+y;
+        int visual_row = E.rowoff + y;
+        int filerow = 0;
+        int row_offset = 0;
+
+        /* Find the file row and column offset for this visual row (soft wrap) */
+        while (filerow < E.numrows) {
+            int row_height = (E.row[filerow].rsize + E.screencols - 1) / E.screencols;
+            if (visual_row < row_offset + row_height) break;
+            row_offset += row_height;
+            filerow++;
+        }
 
         if (filerow >= E.numrows) {
             if (E.numrows == 0 && y == E.screenrows/3) {
@@ -915,14 +925,17 @@ void editorRefreshScreen(void) {
             continue;
         }
 
+        int subrow = visual_row - row_offset; /* Which sub-row of the line */
+        int coloff = subrow * E.screencols;
+
         r = &E.row[filerow];
 
-        int len = r->rsize - E.coloff;
+        int len = r->rsize - coloff;
+        if (len > E.screencols) len = E.screencols;
         int current_color = -1;
         if (len > 0) {
-            if (len > E.screencols) len = E.screencols;
-            char *c = r->render+E.coloff;
-            unsigned char *hl = r->hl+E.coloff;
+            char *c = r->render + coloff;
+            unsigned char *hl = r->hl + coloff;
             int j;
             for (j = 0; j < len; j++) {
                 if (hl[j] == HL_NONPRINT) {
@@ -989,10 +1002,22 @@ void editorRefreshScreen(void) {
      * because of TABs. */
     int j;
     int cx = 1;
-    int filerow = E.rowoff+E.cy;
+    int visual_row = E.rowoff + E.cy;
+    int filerow = 0;
+    int row_offset = 0;
+
+    /* Find the file row and column offset for this visual row (soft wrap) */
+    while (filerow < E.numrows) {
+        int row_height = (E.row[filerow].rsize + E.screencols - 1) / E.screencols;
+        if (visual_row < row_offset + row_height) break;
+        row_offset += row_height;
+        filerow++;
+    }
+
     erow *row = (filerow >= E.numrows) ? NULL : &E.row[filerow];
+    int coloff = (visual_row - row_offset) * E.screencols;
     if (row) {
-        for (j = E.coloff; j < (E.cx+E.coloff); j++) {
+        for (j = coloff; j < E.cx + coloff; j++) {
             if (j < row->size && row->chars[j] == TAB) cx += 7-((cx)%8);
             cx++;
         }
