@@ -53,6 +53,7 @@
 #include <stdarg.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <locale.h>
 
 /* Syntax highlight types */
 #define HL_NORMAL 0
@@ -1462,6 +1463,7 @@ void initEditor(void) {
 }
 
 int main(int argc, char **argv) {
+    setlocale(LC_ALL, ""); /* Enable UTF-8 support */
     if (argc != 2) {
         fprintf(stderr,"Usage: kilo <filename>\n");
         exit(1);
