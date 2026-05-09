@@ -1035,6 +1035,17 @@ void editorRefreshScreen(void) {
             int j = 0;
             while (j < len && screen_width < E.screencols) {
                 int char_w = utf8CharWidth((const unsigned char *)c + j, len - j);
+                /* Calculate byte count for this character */
+                int char_bytes = 1;
+                if ((c[j] & 0x80) == 0) {
+                    char_bytes = 1;
+                } else if ((c[j] & 0xE0) == 0xC0) {
+                    char_bytes = 2;
+                } else if ((c[j] & 0xF0) == 0xE0) {
+                    char_bytes = 3;
+                } else if ((c[j] & 0xF8) == 0xF0) {
+                    char_bytes = 4;
+                }
                 if (screen_width + char_w > E.screencols) break;
                 if (hl[j] == HL_NONPRINT) {
                     char sym;
@@ -1050,7 +1061,7 @@ void editorRefreshScreen(void) {
                         abAppend(&ab,"\x1b[39m",5);
                         current_color = -1;
                     }
-                    abAppend(&ab,c+j,char_w);
+                    abAppend(&ab,c+j,char_bytes);
                 } else {
                     int color = editorSyntaxToColor(hl[j]);
                     if (color != current_color) {
@@ -1059,21 +1070,10 @@ void editorRefreshScreen(void) {
                         current_color = color;
                         abAppend(&ab,buf,clen);
                     }
-                    abAppend(&ab,c+j,char_w);
+                    abAppend(&ab,c+j,char_bytes);
                 }
                 screen_width += char_w;
-                /* Advance to next UTF-8 character */
-                if ((c[j] & 0x80) == 0) {
-                    j++;
-                } else if ((c[j] & 0xE0) == 0xC0) {
-                    j += 2;
-                } else if ((c[j] & 0xF0) == 0xE0) {
-                    j += 3;
-                } else if ((c[j] & 0xF8) == 0xF0) {
-                    j += 4;
-                } else {
-                    j++;
-                }
+                j += char_bytes;
             }
             len = j;
         }
